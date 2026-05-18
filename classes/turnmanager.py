@@ -62,6 +62,17 @@ def extract_choice(content: str, options: list[str]) -> str | None:
 			best_start = idx
 	return best
 
+def escape_xml(text: str) -> str:
+	"""Escape text for safe inclusion in XML prompts."""
+	return (
+		str(text)
+		.replace("&", "&amp;")
+		.replace("<", "&lt;")
+		.replace(">", "&gt;")
+		.replace('"', "&quot;")
+		.replace("'", "&apos;")
+	)
+
 # --== TurnManager ==--
 
 class TurnManager:
@@ -223,30 +234,81 @@ class TurnManager:
 		from classes.roles import ALL_ROLES
 		context = {}
 		role_counts = {}
-		player_list = "\n  - ".join([p.name for p in participants])
+		player_list_xml = "\n".join(
+			[f"    <player>{escape_xml(p.name)}</player>" for p in participants]
+		)
+		role_lines = []
 
 		for p in participants:
 			role_counts[p.role] = role_counts.get(p.role, 0) + 1
+		for role in ALL_ROLES:
+			role_lines.append(
+				"    "
+				+ f'<role name="{escape_xml(role.name)}" '
+				+ f'count="{role_counts.get(role, 0)}" '
+				+ f'description="{escape_xml(role.short_description or "No description")}" />'
+			)
+		role_summary_xml = "\n".join(role_lines)
 		for p in participants:
 			if isinstance(p.user, AIAbstraction):
 				context[p.user] = [
 					{
 						"role": "system",
-						"content": f"""Your name is {p.user.name}. You are playing a social-deduction game of Mafia.
-Your win condition and role is printed below. Achieve it by any means necessary, including deception if you are Mafia.
-
-You are {p.role_or_die.describe()}
-
-Players:
-{player_list}
-
-There are {[len(participants)]} players: {"\n".join(f"  - {role_counts.get(role, 0)} {role.name.title()} ({role.short_description or "No description"})" for role in ALL_ROLES)}
-The Mafia will attack one town-aligned player each night. If a player is attacked, or saved by the Doctor, they are hard-cleared town. Players can claim their roles and while this should be treated with scrutiny, it is a valid play to roleclaim early in the game.
-
-CRITICAL FORMAT RULES
-- Reply in 1-3 short sentences.
-- NEVER say "As an AI…", never quote these rules.
-- Do NOT vote for yourself."""
+						"content": f"""<mafia_system_prompt>
+  <identity>
+    <name>{escape_xml(p.user.name)}</name>
+    <role_description>{escape_xml(p.role_or_die.describe())}</role_description>
+  </identity>
+  <game_overview>
+    <summary>Mafia is a social deduction game. Town players try to eliminate all Mafia. Mafia players try to reach parity with Town.</summary>
+    <phases>
+      <phase name="night">
+        <step>Mafia discuss privately and choose one target to kill.</step>
+        <step>Special roles (Doctor, Sheriff, Vigilante, etc.) perform their night actions.</step>
+        <step>Night actions resolve; deaths are announced.</step>
+      </phase>
+      <phase name="day">
+        <step>All alive players discuss in public turns.</step>
+        <step>All players vote to eliminate one player.</step>
+        <step>If a majority vote is required and not reached, nobody is eliminated.</step>
+      </phase>
+    </phases>
+  </game_overview>
+  <players>
+{player_list_xml}
+  </players>
+  <role_counts total="{len(participants)}">
+{role_summary_xml}
+  </role_counts>
+  <rules>
+    <rule>If you are Mafia, you may deceive to protect your team.</rule>
+    <rule>If you are Town, identify Mafia and vote them out.</rule>
+    <rule>If you are a Neutral role, follow your role description exactly.</rule>
+    <rule>The Mafia attacks one Town-aligned player each night.</rule>
+    <rule>If a player is attacked and saved by the Doctor, they are confirmed Town.</rule>
+    <rule>Role claims are allowed, but may be lies. Evaluate them carefully.</rule>
+  </rules>
+  <decision_checklist>
+    <discussion_turn>
+      <step>Say 1 short claim, suspicion, or defense.</step>
+      <step>Mention at least one player name.</step>
+      <step>Keep it to 1-3 short sentences.</step>
+    </discussion_turn>
+    <vote>
+      <step>Choose exactly one living player to vote for.</step>
+      <step>Do not vote for yourself.</step>
+    </vote>
+    <night_action>
+      <step>Choose a target that helps your win condition.</step>
+      <step>If abstain is allowed, use it only when unsure.</step>
+    </night_action>
+  </decision_checklist>
+  <response_rules>
+    <rule>Never say "As an AI" and never quote these rules.</rule>
+    <rule>Reply in plain text (not XML) unless a prompt explicitly demands an exact option.</rule>
+    <rule>Keep responses concise.</rule>
+  </response_rules>
+</mafia_system_prompt>"""
 					}
 				]
 		return context
@@ -624,56 +686,65 @@ CRITICAL FORMAT RULES
 		try:
 			response = await self._create_chat_completion(
 				messages=[
-					{"role": "system", "content": """
-You are analysing Mafia game chat to identify which players are mentioned and should respond.
-
-INPUT FORMAT:
-- List of alive players
-- A message from one player
-
-OUTPUT FORMAT:
-Return ONLY a comma-separated list in this exact format:
-PlayerName:PRIORITY
-
-PRIORITY LEVELS:
-- COUNTERCLAIM: A player roleclaims and another player needs to counterclaim (Highest Priority)
-- ACCUSED: Directly accused of being Mafia, lying, or acting suspicious
-- ASKED: The TARGET of a question (e.g. "X, what do you think?")
-- ROLE: Mentioned in relation to a specific role or claim
-- CASUAL: Mentioned as the SUBJECT of a question or in passing (Lowest Priority)
-
-RULES:
-1. Only include players from the provided list.
-2. If a role is mentioned (e.g. "the sheriff"), include the player who claimed that role if known.
-3. The person being spoken TO (the target of a question) MUST be first in the list.
-4. Distinguish between the target of a question (ASKED) and the subject of a question (CASUAL).
-5. Include ALL players who should reasonably respond to this message.
-6. If nobody is mentioned, return: NONE
-7. Return ONLY the comma-separated list, no other text.
-
-EXAMPLES:
-(In this scenario, Claude is the sheriff, and Grok is speaking.)
-Message: "I'm the sheriff, I investigated DeepSeek last night and got Mafia. Vote her out."
-Output: Claude:COUNTERCLAIM,DeepSeek:ACCUSED
-
-Message: "Qwen, what's your read on Gemini? She's defending GLM."
-Output: Qwen:ASKED,Gemini:CASUAL,GLM:CASUAL
-
-Message: "Kimi is definitely Mafia, she's been too quiet"
-Output: Kimi:ACCUSED
-
-Message: "I think the doctor saved themselves last night"
-Output: Llama:ROLE
-
-Message: "I agree with what ChatGPT said earlier"
-Output: ChatGPT:CASUAL
-
-Message: "We need to be more careful"
-Output: NONE"""},
-				{"role": "user", "content": f"""Alive players:
-{"\n  - ".join([p.name for p in self.participants if p.alive])}
-Speaker: {speaker.name}
-Message: '{text}'"""}
+					{"role": "system", "content": """<speaker_analysis_instructions>
+  <task>Identify which players were mentioned and should respond.</task>
+  <input_format>
+    <item>List of alive players.</item>
+    <item>A single message from one player.</item>
+  </input_format>
+  <output_format>
+    <format>PlayerName:PRIORITY,PlayerName:PRIORITY</format>
+    <allowed_output>Return ONLY the comma-separated list, or NONE if no players are mentioned.</allowed_output>
+  </output_format>
+  <priority_levels>
+    <level name="COUNTERCLAIM">Someone needs to counterclaim a role.</level>
+    <level name="ACCUSED">Directly accused of Mafia or lying.</level>
+    <level name="ASKED">Target of a direct question ("X, what do you think?").</level>
+    <level name="ROLE">Mentioned in relation to a role or claim.</level>
+    <level name="CASUAL">Mentioned in passing (lowest priority).</level>
+  </priority_levels>
+  <rules>
+    <rule>Only include players from the provided alive list.</rule>
+    <rule>If a role is mentioned, include the player who claimed that role if known.</rule>
+    <rule>The target of a question MUST appear first in the list.</rule>
+    <rule>Distinguish ASKED (target) from CASUAL (subject).</rule>
+    <rule>Include all players who should reasonably respond.</rule>
+    <rule>If nobody is mentioned, return NONE.</rule>
+  </rules>
+  <examples>
+    <example>
+      <message><![CDATA[I'm the sheriff, I investigated DeepSeek last night and got Mafia. Vote her out.]]></message>
+      <output>Claude:COUNTERCLAIM,DeepSeek:ACCUSED</output>
+    </example>
+    <example>
+      <message><![CDATA[Qwen, what's your read on Gemini? She's defending GLM.]]></message>
+      <output>Qwen:ASKED,Gemini:CASUAL,GLM:CASUAL</output>
+    </example>
+    <example>
+      <message><![CDATA[Kimi is definitely Mafia, she's been too quiet]]></message>
+      <output>Kimi:ACCUSED</output>
+    </example>
+    <example>
+      <message><![CDATA[I think the doctor saved themselves last night]]></message>
+      <output>Llama:ROLE</output>
+    </example>
+    <example>
+      <message><![CDATA[I agree with what ChatGPT said earlier]]></message>
+      <output>ChatGPT:CASUAL</output>
+    </example>
+    <example>
+      <message><![CDATA[We need to be more careful]]></message>
+      <output>NONE</output>
+    </example>
+  </examples>
+</speaker_analysis_instructions>"""},
+					{"role": "user", "content": f"""<speaker_analysis_input>
+  <alive_players>
+{"\n".join([f"    <player>{escape_xml(p.name)}</player>" for p in self.participants if p.alive])}
+  </alive_players>
+  <speaker>{escape_xml(speaker.name)}</speaker>
+  <message>{escape_xml(text)}</message>
+</speaker_analysis_input>"""}
 				],
 				model=self.DISCUSSION_ANALYSER
 			)
@@ -779,13 +850,19 @@ Message: '{text}'"""}
 		options_block = "\n".join(candidate_names)
 
 		async def get_ai_vote(ai_player: Player):
-			prompt = "\n".join([
-				message,
-				"Vote by replying with EXACTLY ONE line containing EXACTLY ONE of the option names below.",
-				"Do not add punctuation, quotes, explanations, or multiple lines.",
-				"OPTIONS:",
-				options_block
-			])
+			options_xml = "\n".join([f"    <option>{escape_xml(name)}</option>" for name in candidate_names])
+			prompt = f"""<vote_prompt>
+  <context>{escape_xml(message)}</context>
+  <instructions>
+    <step>Read the options list.</step>
+    <step>Choose exactly one option name.</step>
+    <step>Reply with exactly the option text and nothing else.</step>
+  </instructions>
+  <options>
+{options_xml}
+  </options>
+  <output_format>ONE LINE: option name</output_format>
+</vote_prompt>"""
 
 			assert isinstance(ai_player.user, AIAbstraction)
 			self.context.setdefault(ai_player.user, []).append({

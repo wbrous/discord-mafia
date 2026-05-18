@@ -279,13 +279,13 @@ async def test_initialize_ai_context_builds_system_prompts_for_ai_players_only()
     assert set(context.keys()) == {cast(AIAbstraction, ai_one.user), cast(AIAbstraction, ai_two.user)}
     prompt_one = context[cast(AIAbstraction, ai_one.user)][0]["content"]
     prompt_two = context[cast(AIAbstraction, ai_two.user)][0]["content"]
-    assert "Your name is Bot One" in prompt_one
-    assert "Players:" in prompt_one
-    assert "Alice" in prompt_one
-    assert "Bot Two" in prompt_one
-    assert "There are [3] players" in prompt_one
-    assert "Your name is Bot Two" in prompt_two
-    assert "Bot One" in prompt_two
+    assert "<name>Bot One</name>" in prompt_one
+    assert "<players>" in prompt_one
+    assert "<player>Alice</player>" in prompt_one
+    assert "<player>Bot Two</player>" in prompt_one
+    assert 'role_counts total="3"' in prompt_one
+    assert "<name>Bot Two</name>" in prompt_two
+    assert "<player>Bot One</player>" in prompt_two
 
 
 @pytest.mark.asyncio
