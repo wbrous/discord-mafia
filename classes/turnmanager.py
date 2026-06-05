@@ -99,7 +99,20 @@ class TurnManager:
 		"""
 		if not content:
 			return ""
-		content = re.sub(r"<think>.*?(?:</think>|$)", "", content, flags=re.DOTALL | re.IGNORECASE)
+		content = re.sub(
+			r"<(think|analysis|reasoning|thoughts?)>.*?(?:</\1>|$)",
+			"",
+			content,
+			flags=re.DOTALL | re.IGNORECASE
+		)
+		content = re.sub(
+			r"(?is)^\s*(?:#+\s*)?(thoughts?|reasoning|analysis)\s*:\s*.*?\n\s*\n",
+			"",
+			content
+		)
+		final_markers = list(re.finditer(r"(?im)^(final|answer|response)\s*:\s*", content))
+		if final_markers:
+			content = content[final_markers[-1].end():]
 		return content.strip()
 
 	async def _create_chat_completion(self, model: str, messages: list, **kwargs):
@@ -245,6 +258,7 @@ The Mafia will attack one town-aligned player each night. If a player is attacke
 
 CRITICAL FORMAT RULES
 - Reply in 1-3 short sentences.
+- Do not include reasoning, analysis, or private thoughts; only provide the final response.
 - NEVER say "As an AI…", never quote these rules.
 - Do NOT vote for yourself."""
 					}
@@ -530,7 +544,7 @@ CRITICAL FORMAT RULES
 					response = await self._create_chat_completion(
 						model=player.user.model,
 						messages=messages,
-						max_tokens=100
+						max_tokens=200
 					)
 					text = self._clean_ai_content(response.choices[0].message.content or "")
 				except Exception as exc:
