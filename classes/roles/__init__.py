@@ -12,7 +12,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Literal, TypedDict, NamedTuple
 import discord
 
-from classes.turnmanager import extract_choice
+from classes.turnmanager import extract_choice, escape_xml
 
 
 if TYPE_CHECKING:
@@ -217,10 +217,23 @@ class SelectRole(Role):
 		if self.skippable:
 			prompt_options.append("abstain")
 
-		prompt = f"NIGHT: {self.name.upper()} {self.action_label.upper()}\n> {self.get_prompt()}\n"
+		options_xml = "\n".join([f"    <option>{escape_xml(name)}</option>" for name in prompt_options])
+		abstain_step = ""
 		if self.skippable:
-			prompt += "Note: You are NOT required to act. If you don't have a strong suspicion, you should 'abstain' to avoid hurting your team.\n"
-		prompt += "Available options:\n" + "\n".join([f"- {name}" for name in prompt_options])
+			abstain_step = "\n    <step>If you are unsure, choose abstain.</step>"
+		prompt = f"""<night_action_prompt>
+  <phase>night</phase>
+  <role>{escape_xml(self.name)}</role>
+  <action>{escape_xml(self.action_label)}</action>
+  <instructions>
+    <step>Choose exactly one option from the list.</step>{abstain_step}
+    <step>Reply with exactly the option text and nothing else.</step>
+  </instructions>
+  <options>
+{options_xml}
+  </options>
+  <output_format>ONE LINE: option name</output_format>
+</night_action_prompt>"""
 
 		assert game.turns is not None
 		choice_text = await game.turns.create_ai_completion(player, prompt)
@@ -317,7 +330,11 @@ class InvestigateRole(SelectRole):
 		# PYREX NOTE: Tacit assumption made by the existing code pre-typechecking
 		assert game.turns is not None
 		assert user.role is not None, "role was unexpectedly None"
-		result_prompt = f"{user.name} is **{user.role.alignment.value.upper()}**."
+		result_prompt = f"""<investigation_result>
+  <target>{escape_xml(user.name)}</target>
+  <alignment>{escape_xml(user.role.alignment.value.upper())}</alignment>
+  <instruction>Remember this result for future decisions.</instruction>
+</investigation_result>"""
 		from classes.player import AIAbstraction
 		if isinstance(player.user, AIAbstraction):
 			await game.turns.create_ai_completion(player, result_prompt)

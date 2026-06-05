@@ -418,7 +418,9 @@ class TestInvestigateRole:
         r = InvestigateRole("Sheriff", Alignment.TOWN, "desc", "short")
         await r.handle_selection(game, player, suspect)
 
-        game.turns.create_ai_completion.assert_awaited_once_with(
-            player,
-            "Alice is **TOWN**.",
-        )
+        game.turns.create_ai_completion.assert_awaited_once()
+        args, _ = game.turns.create_ai_completion.call_args
+        assert args[0] == player
+        assert "<investigation_result>" in args[1]
+        assert "<target>Alice</target>" in args[1]
+        assert "<alignment>TOWN</alignment>" in args[1]
